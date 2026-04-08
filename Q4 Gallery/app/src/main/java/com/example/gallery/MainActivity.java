@@ -4,6 +4,7 @@ import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -43,17 +44,12 @@ public class MainActivity extends AppCompatActivity {
         btnChooseFolder = findViewById(R.id.btnChooseFolder);
         gridView        = findViewById(R.id.gridView);
 
-        // Set default folder to DCIM/Camera
-        currentFolder = new File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera");
-
-        requestPermissions();
+        // Ask for permissions first
+        askPermissions();
 
         btnTakePhoto.setOnClickListener(v -> takePhoto());
-
         btnChooseFolder.setOnClickListener(v -> chooseFolder());
 
-        // When image is clicked open detail screen
         gridView.setOnItemClickListener((parent, view, position, id) -> {
             Intent intent = new Intent(this, ImageDetailActivity.class);
             intent.putExtra("imagePath", imageList.get(position).getAbsolutePath());
@@ -61,39 +57,79 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    void requestPermissions() {
-        String[] permissions = {
-                Manifest.permission.CAMERA,
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-        };
-        ActivityCompat.requestPermissions(this, permissions, REQUEST_PERMISSIONS);
+    void askPermissions() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13 and above
+            ActivityCompat.requestPermissions(this,
+                    new String[]{
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.READ_MEDIA_IMAGES
+                    }, REQUEST_PERMISSIONS);
+        } else {
+            // Android 12 and below
+            ActivityCompat.requestPermissions(this,
+                    new String[]{
+                            Manifest.permission.CAMERA,
+                            Manifest.permission.READ_EXTERNAL_STORAGE,
+                            Manifest.permission.WRITE_EXTERNAL_STORAGE
+                    }, REQUEST_PERMISSIONS);
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+                                           String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQUEST_PERMISSIONS) {
+            // After permissions granted load default folder
+            currentFolder = new File(
+                    Environment.getExternalStoragePublicDirectory(
+                            Environment.DIRECTORY_DCIM), "Camera");
+            loadImages(currentFolder);
+        }
     }
 
     void takePhoto() {
+        // Check camera permission first
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, "Camera permission needed!", Toast.LENGTH_SHORT).show();
+            askPermissions();
+            return;
+        }
+
         Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
         if (intent.resolveActivity(getPackageManager()) != null) {
-            // Create file to save photo
-            String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
-            String fileName = "IMG_" + timestamp + ".jpg";
+            try {
+                String timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss",
+                        Locale.getDefault()).format(new Date());
 
-            // Save to DCIM/Camera folder
-            File folder = new File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "Camera");
-            if (!folder.exists()) folder.mkdirs();
+                // Save to Pictures folder - more compatible
+                File folder = new File(
+                        Environment.getExternalStoragePublicDirectory(
+                                Environment.DIRECTORY_PICTURES), "MADAssignment");
+                if (!folder.exists()) folder.mkdirs();
 
-            currentPhotoFile = new File(folder, fileName);
+                currentPhotoFile = new File(folder, "IMG_" + timestamp + ".jpg");
+                currentFolder = folder;
 
-            Uri photoUri = FileProvider.getUriForFile(this,
-                    getPackageName() + ".fileprovider", currentPhotoFile);
+                Uri photoUri = FileProvider.getUriForFile(this,
+                        getPackageName() + ".fileprovider", currentPhotoFile);
 
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
-            startActivityForResult(intent, REQUEST_CAMERA);
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, photoUri);
+                intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                startActivityForResult(intent, REQUEST_CAMERA);
+
+            } catch (Exception e) {
+                Toast.makeText(this, "Error: " + e.getMessage(),
+                        Toast.LENGTH_LONG).show();
+            }
+        } else {
+            Toast.makeText(this, "No camera app found!", Toast.LENGTH_SHORT).show();
         }
     }
 
     void chooseFolder() {
-        // Open folder picker
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
         startActivityForResult(intent, REQUEST_FOLDER);
     }
@@ -107,13 +143,13 @@ public class MainActivity extends AppCompatActivity {
             loadImages(currentFolder);
         }
 
-        if (requestCode == REQUEST_FOLDER && resultCode == RESULT_OK && data != null) {
-            // Get folder path from URI
+        if (requestCode == REQUEST_FOLDER && resultCode == RESULT_OK
+                && data != null) {
             Uri uri = data.getData();
             String path = uri.getPath();
-            // Convert to real path
-            if (path.contains(":")) {
-                path = Environment.getExternalStorageDirectory() + "/" + path.split(":")[1];
+            if (path != null && path.contains(":")) {
+                path = Environment.getExternalStorageDirectory()
+                        + "/" + path.split(":")[1];
             }
             currentFolder = new File(path);
             loadImages(currentFolder);
@@ -127,8 +163,8 @@ public class MainActivity extends AppCompatActivity {
             if (files != null) {
                 for (File file : files) {
                     String name = file.getName().toLowerCase();
-                    if (name.endsWith(".jpg") || name.endsWith(".jpeg") ||
-                            name.endsWith(".png") || name.endsWith(".gif")) {
+                    if (name.endsWith(".jpg") || name.endsWith(".jpeg")
+                            || name.endsWith(".png") || name.endsWith(".gif")) {
                         imageList.add(file);
                     }
                 }
@@ -138,13 +174,16 @@ public class MainActivity extends AppCompatActivity {
         gridView.setAdapter(adapter);
 
         if (imageList.isEmpty()) {
-            Toast.makeText(this, "No images found in this folder", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "No images found. Take a photo or choose a folder!",
+                    Toast.LENGTH_SHORT).show();
         }
     }
 
     @Override
     protected void onResume() {
         super.onResume();
-        loadImages(currentFolder);
+        if (currentFolder != null) {
+            loadImages(currentFolder);
+        }
     }
 }
